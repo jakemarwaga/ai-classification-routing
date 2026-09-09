@@ -12,24 +12,49 @@ A tenant submits a maintenance request as free text: *"there's water coming thro
 
 ## The flow
 
-```
-Webhook (tenant form)
-   └─> Normalize Request Data
-          └─> Classify Request  ── LLM: {category, urgency}
-                 └─> Read Classification
-                        └─> Create Airtable record (status: New)
-                               └─> Is Emergency?
-                                    ├── TRUE  ─> Slack #maintenance-urgent
-                                    │            ├─> SMS on-call manager ─> SMS tenant
-                                    │            └─> Email manager ─────> Email tenant
-                                    └── FALSE ─> Look up service zone
-                                                  └─> Find available vendor
-                                                        └─> Email vendor the job
-                                                              └─> Mark dispatched
-                                                                    └─> SMS tenant
+```mermaid
+flowchart TD
+    WH([Webhook: tenant form]) --> NORM[Normalize Request Data]
+    NORM --> CLS[Classify Request<br/>LLM → category + urgency]
+    CLS --> READ[Read Classification]
+    READ --> REC[(Airtable: create record<br/>status = New)]
+    REC --> EMG{Is Emergency?}
 
-   every fallible node ──error output──> Notify Admin of Failure (separate Slack channel)
+    EMG -->|emergency| SLK[Slack #maintenance-urgent]
+    SLK --> SMS1[SMS on-call manager]
+    SLK --> EML1[Email property manager]
+    SMS1 --> SMS2[SMS tenant<br/>help is on the way]
+    EML1 --> EML2[Email tenant<br/>request confirmed]
+
+    EMG -->|high / medium / low| ZONE[(Airtable: look up<br/>service zone)]
+    ZONE --> VND[(Airtable: find first<br/>available vendor)]
+    VND --> VML[Email vendor<br/>job details]
+    VML --> UPD[(Airtable: mark assigned)]
+    UPD --> SMS3[SMS tenant<br/>vendor assigned]
+
+    CLS -.-> ERR
+    REC -.-> ERR
+    SLK -.-> ERR
+    SMS1 -.-> ERR
+    SMS2 -.-> ERR
+    ZONE -.-> ERR
+    VND -.-> ERR
+    VML -.-> ERR
+    UPD -.-> ERR
+    SMS3 -.-> ERR
+    ERR[Notify Admin of Failure<br/>separate Slack channel]
+
+    classDef ai fill:#7c3aed,stroke:#5b21b6,color:#fff
+    classDef db fill:#0369a1,stroke:#075985,color:#fff
+    classDef err fill:#b91c1c,stroke:#7f1d1d,color:#fff
+    classDef gate fill:#b45309,stroke:#78350f,color:#fff
+    class CLS ai
+    class REC,ZONE,VND,UPD db
+    class ERR err
+    class EMG gate
 ```
+
+<sub>Dotted lines are node error outputs. Every external call has one.</sub>
 
 **Classification** uses the Information Extractor node against a strict JSON schema — `category` is one of five enum values, `urgency` one of four. Enums rather than free-form strings, because the next node branches on the exact value: a model that answers "quite urgent" instead of `high` breaks the routing silently.
 
