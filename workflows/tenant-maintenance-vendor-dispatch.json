@@ -1,0 +1,541 @@
+{
+  "name": "Property Mgmt: Tenant Maintenance Request → Vendor Dispatch",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "maintenance-request",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "3f2a1b4c-7d8e-4a1f-9c3b-2e5f6a7b8c9d",
+      "name": "Webhook - Maintenance Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 512],
+      "notes": "Entry point. Receives POST from the tenant maintenance-request web form (Tally). Expects a form-response body whose data.fields[] carries tenant_name, unit_number, description, contact_phone and contact_email."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "tenant_name", "type": "string", "value": "={{ $json.body.data.fields[0].value }}" },
+            { "id": "a2", "name": "unit_number", "type": "string", "value": "={{ $json.body.data.fields[1].value }}" },
+            { "id": "a4", "name": "description", "type": "string", "value": "={{ $json.body.data.fields[2].value }}" },
+            { "id": "a5", "name": "contact_phone", "type": "string", "value": "={{ $json.body.data.fields[3].value }}" },
+            { "id": "a6", "name": "contact_email", "type": "string", "value": "={{ $json.body.data.fields[5].value }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8b4e2f1a-3c9d-4e7b-8a2f-1d6c5b4a3e2f",
+      "name": "Normalize Request Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [464, 512],
+      "notes": "Normalizes the raw webhook body into clean top-level fields. Every downstream node reads tenant/request data from THIS node by name, independent of what the AI/Airtable nodes output later."
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {}
+      },
+      "id": "1a2b3c4d-5e6f-4789-9abc-def012345678",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [640, 704],
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "OpenAI account" }
+      },
+      "notes": "Language model powering the classification step. Swap the model name or credential as needed."
+    },
+    {
+      "parameters": {
+        "text": "={{ $json.description }}",
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"enum\": [\"plumbing\", \"electrical\", \"hvac\", \"appliance\", \"general\"],\n      \"description\": \"The type of maintenance issue described by the tenant\"\n    },\n    \"urgency\": {\n      \"type\": \"string\",\n      \"enum\": [\"emergency\", \"high\", \"medium\", \"low\"],\n      \"description\": \"How urgently this issue needs to be addressed. Use 'emergency' only for issues posing an immediate safety or property risk (active flooding, no heat in freezing weather, exposed live wiring, gas smell, etc.).\"\n    }\n  },\n  \"required\": [\"category\", \"urgency\"]\n}",
+        "options": {
+          "systemPromptTemplate": "You are an expert maintenance dispatcher for a residential property management company. Read the tenant's maintenance request description and extract the requested fields. Respond only with the structured data requested — do not wrap the output in markdown code blocks."
+        }
+      },
+      "id": "2b3c4d5e-6f70-4819-8bcd-ef0123456789",
+      "name": "Classify Request",
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [688, 512],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "b1", "name": "category", "type": "string", "value": "={{ $json.output ? $json.output.category : $json.category }}" },
+            { "id": "b2", "name": "urgency", "type": "string", "value": "={{ $json.output ? $json.output.urgency : $json.urgency }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3c4d5e6f-7081-492a-9cde-f0123456789a",
+      "name": "Read Classification",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [976, 400],
+      "notes": "Reads the extractor output defensively. The Information Extractor nests results under `output`, but a retry or a direct-parse path can return the fields flat — this handles both instead of failing on the shape."
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_REQUESTS_TABLE_ID",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "tenant_name": "={{ $('Normalize Request Data').item.json.tenant_name }}",
+            "unit_number": "={{ $('Normalize Request Data').item.json.unit_number }}",
+            "description": "={{ $('Normalize Request Data').item.json.description }}",
+            "contact_phone": "={{ $('Normalize Request Data').item.json.contact_phone }}",
+            "contact_email": "={{ $('Normalize Request Data').item.json.contact_email }}",
+            "category": "={{ $('Classify Request').item.json.output.category }}",
+            "urgency": "={{ $('Classify Request').item.json.output.urgency }}",
+            "status": "New",
+            "created_at": "={{ $now }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "4d5e6f70-8192-4a3b-8def-0123456789ab",
+      "name": "Create Maintenance Request Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [1168, 496],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "airtableTokenApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Airtable Personal Access Token account" }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Requests table columns: tenant_name, unit_number, description, contact_phone, contact_email, category (single select), urgency (single select), status (single select), created_at (date), assigned_vendor."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Read Classification').item.json.urgency }}",
+              "rightValue": "emergency",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5e6f7081-92a3-4b4c-9ef0-123456789abc",
+      "name": "Is Emergency?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1344, 512],
+      "notes": "TRUE (urgency = emergency): immediate Slack + SMS + email alerts. FALSE: continue to vendor matching. Reads urgency from 'Read Classification' rather than $json, because the Airtable node in between has replaced the item shape."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_URGENT_CHANNEL_ID",
+          "mode": "id",
+          "cachedResultName": "maintenance-urgent"
+        },
+        "text": "=Tenant: {{ $json.fields.tenant_name }}\nUnit Number:{{ $json.fields.unit_number }}\nCategory:{{ $json.fields.category }}\nDescription:{{ $json.fields.description }}\nUrgency:{{ $json.fields.urgency }}\nContact Number:{{ $json.fields.contact_phone }}\nCreated at:{{ $json.fields.created_at }}",
+        "otherOptions": {}
+      },
+      "id": "6f708192-a3b4-4c5d-8f01-23456789abcd",
+      "name": "Notify #maintenance-urgent",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [1568, 256],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "slackApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Slack account" }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "from": "REPLACE_WITH_YOUR_TWILIO_FROM_NUMBER",
+        "to": "REPLACE_WITH_YOUR_ONCALL_NUMBER",
+        "message": "=EMERGENCY maintenance request: {{ $('Read Classification').item.json.category }} issue at Unit {{ $('Normalize Request Data').item.json.unit_number }},\nTenant: {{ $('Normalize Request Data').item.json.tenant_name }} ({{ $('Normalize Request Data').item.json.contact_phone }}). Details: {{ $('Normalize Request Data').item.json.description }}",
+        "options": {}
+      },
+      "id": "708192a3-b4c5-4d6e-9012-3456789abcde",
+      "name": "SMS Property Manager - Emergency",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1856, 256],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "twilioApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Twilio account" }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "from": "REPLACE_WITH_YOUR_TWILIO_FROM_NUMBER",
+        "to": "={{ $('Normalize Request Data').item.json.contact_phone }}",
+        "message": "=Hi {{ $('Normalize Request Data').item.json.tenant_name }}, we've received your maintenance request for Unit {{ $('Normalize Request Data').item.json.unit_number }} and flagged it as an emergency — help is on the way. We'll follow up shortly.",
+        "options": {}
+      },
+      "id": "8192a3b4-c5d6-4e7f-8123-456789abcdef",
+      "name": "SMS Tenant - Help Is On The Way",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2080, 256],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "twilioApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Twilio account" }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Terminal node for the emergency branch. Confirms receipt to the tenant."
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_PROPERTY_MANAGER_EMAIL",
+        "subject": "Maintenance Request",
+        "emailType": "text",
+        "message": "=EMERGENCY maintenance request: {{ $('Read Classification').item.json.category }} issue at Unit {{ $('Normalize Request Data').item.json.unit_number }}, Tenant: {{ $('Normalize Request Data').item.json.tenant_name }} ({{ $('Normalize Request Data').item.json.contact_phone }}). Details: {{ $('Normalize Request Data').item.json.description }}",
+        "options": { "appendAttribution": false }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [1856, 64],
+      "id": "6a4800f1-3ef8-455b-8eab-16dafc12ce13",
+      "name": "Send Property Manager Email",
+      "notesInFlow": false,
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Gmail account" }
+      },
+      "notes": "Email fallback beside the SMS. Two independent channels for the emergency path, so a single provider outage does not lose the alert."
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Normalize Request Data').item.json.contact_email }}",
+        "subject": "Request Confirmed",
+        "emailType": "text",
+        "message": "=Hi {{ $('Normalize Request Data').item.json.tenant_name }}, we've received your maintenance request for Unit {{ $('Normalize Request Data').item.json.unit_number }} and flagged it as an emergency — help is on the way. We'll follow up shortly.",
+        "options": { "appendAttribution": false }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [2080, 64],
+      "id": "506b7bfd-663e-4986-9db6-126174d1a692",
+      "name": "Send Reply",
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_PROPERTIES_TABLE_ID",
+          "mode": "id"
+        },
+        "filterByFormula": "={{ \"{unit_number} = '\" + $('Normalize Request Data').item.json.unit_number + \"'\" }}",
+        "returnAll": false,
+        "limit": 1,
+        "options": {}
+      },
+      "id": "92a3b4c5-d6e7-4f80-9234-56789abcdef0",
+      "name": "Look Up Property Service Zone",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [1584, 704],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "airtableTokenApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Airtable Personal Access Token account" }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "A separate Properties table maps unit_number → service_zone. Looks up the zone for this request's unit_number, one record expected."
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_VENDORS_TABLE_ID",
+          "mode": "id"
+        },
+        "filterByFormula": "={{ \"AND({category}='\" + $('Read Classification').item.json.category + \"', {service_zone}='\" + $('Look Up Property Service Zone').item.json.service_zone + \"', {status}='available')\" }}",
+        "returnAll": false,
+        "limit": 1,
+        "options": {}
+      },
+      "id": "a3b4c5d6-e7f8-4091-8345-6789abcdef01",
+      "name": "Find Available Vendor",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [1792, 704],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "airtableTokenApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Airtable Personal Access Token account" }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Filters the Vendors table by category + service_zone + status=available, limit 1 — gives the first available vendor without an extra node. Vendors table needs: category, service_zone, status, vendor_name, vendor_email."
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Find Available Vendor').item.json.vendor_email }}",
+        "subject": "=New maintenance job — Unit {{ $('Normalize Request Data').item.json.unit_number }} ({{ $('Read Classification').item.json.category }})",
+        "message": "=You've been assigned a new maintenance job.\n\nUnit: {{ $('Normalize Request Data').item.json.unit_number }}\nCategory: {{ $('Read Classification').item.json.category }}\nUrgency: {{ $('Read Classification').item.json.urgency }}\nDescription: {{ $('Normalize Request Data').item.json.description }}\nTenant contact: {{ $('Normalize Request Data').item.json.contact_phone }} / {{ $('Normalize Request Data').item.json.contact_email }}\n\nPlease confirm you can take this job: https://REPLACE_WITH_YOUR_DOMAIN/vendor-accept?request={{ $('Create Maintenance Request Record').item.json.id }}",
+        "options": {}
+      },
+      "id": "b4c5d6e7-f809-41a2-9456-789abcdef012",
+      "name": "Email Vendor Job Details",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [2000, 704],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Gmail account" }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Emails the matched vendor the job details plus an accept link. The accept-link handler is out of scope for this workflow."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_REQUESTS_TABLE_ID",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "assigned",
+            "assigned_vendor": "={{ $('Find Available Vendor').item.json.vendor_name }}"
+          },
+          "matchingColumns": ["status", "assigned_vendor"],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "c5d6e7f8-091a-42b3-8567-89abcdef0123",
+      "name": "Update Request - Dispatched",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [2208, 704],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "airtableTokenApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Airtable Personal Access Token account" }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Updates the record created earlier in this run: status → assigned, assigned_vendor → the matched vendor's name."
+    },
+    {
+      "parameters": {
+        "from": "REPLACE_WITH_YOUR_TWILIO_FROM_NUMBER",
+        "to": "={{ $('Normalize Request Data').item.json.contact_phone }}",
+        "message": "=Hi {{ $('Normalize Request Data').item.json.tenant_name }}, your maintenance request for Unit {{ $('Normalize Request Data').item.json.unit_number }} has been received and assigned to {{ $('Find Available Vendor').item.json.vendor_name }}. They'll be in touch to schedule a visit.",
+        "options": {}
+      },
+      "id": "d6e7f809-1a2b-43c4-9678-9abcdef01234",
+      "name": "SMS Tenant - Vendor Assigned",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2384, 704],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "twilioApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Twilio account" }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Terminal node for the non-emergency branch. Confirms receipt and names the assigned vendor."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_OPS_CHANNEL_ID",
+          "mode": "id",
+          "cachedResultName": "notify-admin-failure"
+        },
+        "text": "=⚠️ Maintenance workflow error\nA node failed while processing a tenant maintenance request.\nError: {{ $json.error && $json.error.message ? $json.error.message : JSON.stringify($json) }}\nCheck the n8n execution log for full details and re-run manually if needed.",
+        "otherOptions": {}
+      },
+      "id": "e7f8091a-2b3c-44d5-8789-abcdef012345",
+      "name": "Notify Admin of Failure",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [1344, 992],
+      "credentials": {
+        "slackApi": { "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID", "name": "Slack account" }
+      },
+      "notes": "Shared error handler. Every external-call node's error output (Airtable, Slack, Twilio, Gmail, Information Extractor) fans into this node. Posts to a DIFFERENT channel than #maintenance-urgent so a Slack channel problem can't silently swallow both the alert and its own failure notification."
+    },
+    {
+      "parameters": {
+        "content": "## Tenant Maintenance Request → Vendor Dispatch\n\n**1. Intake** — Webhook receives the tenant's web-form submission; fields are normalized.\n\n**2. AI Classification** — An LLM (via the Information Extractor node) reads the free-text description and assigns a category (plumbing/electrical/hvac/appliance/general) and urgency (emergency/high/medium/low).\n\n**3. Log the request** — A new record is created in the Airtable Requests table with status 'New'.\n\n**4. Branch on urgency:**\n- Emergency → alert #maintenance-urgent on Slack + SMS and email the on-call property manager → confirm to the tenant that help is on the way.\n- High/Medium/Low → look up the property's service zone → match the first available vendor for that category+zone → email the vendor the job details → mark the record assigned → SMS the tenant with the assigned vendor's name.\n\n**5. Error handling** — Any external-service failure (Airtable, Slack, Twilio, Gmail, the extractor) is caught on that node's error output and routed to Notify Admin of Failure, which posts to a separate ops channel.\n\nBefore activating: create the four credentials, replace every REPLACE_WITH_ placeholder with your own IDs, and point the form webhook at your intake form.",
+        "height": 612,
+        "width": 1640,
+        "color": 4
+      },
+      "id": "f1a2b3c4-5d6e-47f8-8901-23456789abcd",
+      "name": "Process Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [432, -928]
+    }
+  ],
+  "connections": {
+    "Webhook - Maintenance Request": {
+      "main": [[{ "node": "Normalize Request Data", "type": "main", "index": 0 }]]
+    },
+    "Normalize Request Data": {
+      "main": [[{ "node": "Classify Request", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [[{ "node": "Classify Request", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Classify Request": {
+      "main": [
+        [{ "node": "Read Classification", "type": "main", "index": 0 }],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Read Classification": {
+      "main": [[{ "node": "Create Maintenance Request Record", "type": "main", "index": 0 }]]
+    },
+    "Create Maintenance Request Record": {
+      "main": [
+        [{ "node": "Is Emergency?", "type": "main", "index": 0 }],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Emergency?": {
+      "main": [
+        [{ "node": "Notify #maintenance-urgent", "type": "main", "index": 0 }],
+        [{ "node": "Look Up Property Service Zone", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify #maintenance-urgent": {
+      "main": [
+        [
+          { "node": "Send Property Manager Email", "type": "main", "index": 0 },
+          { "node": "SMS Property Manager - Emergency", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Property Manager Email": {
+      "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]]
+    },
+    "SMS Property Manager - Emergency": {
+      "main": [
+        [{ "node": "SMS Tenant - Help Is On The Way", "type": "main", "index": 0 }],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "SMS Tenant - Help Is On The Way": {
+      "main": [
+        [],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Look Up Property Service Zone": {
+      "main": [
+        [{ "node": "Find Available Vendor", "type": "main", "index": 0 }],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Find Available Vendor": {
+      "main": [
+        [{ "node": "Email Vendor Job Details", "type": "main", "index": 0 }],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Email Vendor Job Details": {
+      "main": [
+        [{ "node": "Update Request - Dispatched", "type": "main", "index": 0 }],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Request - Dispatched": {
+      "main": [
+        [{ "node": "SMS Tenant - Vendor Assigned", "type": "main", "index": 0 }],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "SMS Tenant - Vendor Assigned": {
+      "main": [
+        [],
+        [{ "node": "Notify Admin of Failure", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

@@ -1,0 +1,18 @@
+﻿# Never commit credentials or environment files.
+# All secrets belong in the n8n credential store, never in workflow JSON.
+.env
+.env.*
+*.key
+*.pem
+credentials*.json
+
+# n8n exports may contain pinned test data with real records - scrub before committing.
+*-raw.json
+*.raw.json
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
